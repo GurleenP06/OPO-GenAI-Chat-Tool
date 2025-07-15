@@ -60,7 +60,7 @@ export default function App() {
   };
 
   const handleDeleteProject = async (projectId: string) => {
-    if (confirm('Are you sure you want to delete this project?')) {
+    if (confirm('Are you sure you want to delete this project? All chats in this project will be moved to "All Chats".')) {
       try {
         await api.deleteProject(projectId);
         await loadChats();
@@ -100,6 +100,27 @@ export default function App() {
     }
   };
 
+  // Check if the selected chat is a favorite
+  const isSelectedChatFavorite = () => {
+    if (!selectedChat) return false;
+    
+    // Check in favorites
+    const favoriteChat = organizedChats.favorites.find(chat => chat.session_id === selectedChat);
+    if (favoriteChat) return true;
+    
+    // Check in projects
+    for (const projectData of Object.values(organizedChats.projects)) {
+      const chat = projectData.chats.find(c => c.session_id === selectedChat);
+      if (chat && chat.is_favorite) return true;
+    }
+    
+    // Check in no_project
+    const noProjectChat = organizedChats.no_project.find(chat => chat.session_id === selectedChat);
+    if (noProjectChat && noProjectChat.is_favorite) return true;
+    
+    return false;
+  };
+
   return (
     <div className="flex h-screen bg-background">
       <ChatSidebar
@@ -119,6 +140,7 @@ export default function App() {
         onToggleFavorite={handleToggleFavorite}
         onRenameChat={handleRenameChat}
         onRefreshChats={loadChats}
+        isFavorite={isSelectedChatFavorite()}
       />
     </div>
   );
