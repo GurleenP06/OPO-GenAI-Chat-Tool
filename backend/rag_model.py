@@ -34,39 +34,87 @@ def extract_sentence_chunks(text: str, chunk_size: int = 3) -> List[Tuple[str, i
     for i in range(0, len(sentences), chunk_size):
         chunk = ' '.join(sentences[i:i+chunk_size])
         start_pos = text.find(chunk)
-        end_pos = start_pos + len(chunk)
+        end_pos = start_pos + len(chunk) if start_pos != -1 else -1
         chunks.append((chunk, start_pos, end_pos))
     
     return chunks
 
 def find_relevant_passages(response_sentence: str, retrieved_docs: List[str], 
-                          retrieved_metadata: List[Dict], threshold: float = 0.5) -> List[Dict]:
+                          retrieved_metadata: List[Dict], threshold: float = 0.3) -> List[Dict]:
     """Find which retrieved passages are relevant to a response sentence."""
     relevant_passages = []
     
-    # Simple keyword matching - in production, you'd use semantic similarity
-    response_keywords = set(response_sentence.lower().split())
+    # Normalize the response sentence
+    response_words = set(response_sentence.lower().split())
     
     for doc, meta in zip(retrieved_docs, retrieved_metadata):
-        doc_keywords = set(doc.lower().split())
-        overlap = len(response_keywords.intersection(doc_keywords))
+        # Split document into sentences
+        doc_sentences = re.split(r'(?<=[.!?])\s+', doc)
         
-        if overlap > len(response_keywords) * threshold:
-            # Find the specific passage in the document
-            doc_sentences = re.split(r'(?<=[.!?])\s+', doc)
-            for idx, sent in enumerate(doc_sentences):
-                sent_keywords = set(sent.lower().split())
-                if len(response_keywords.intersection(sent_keywords)) > 2:
-                    relevant_passages.append({
-                        'filename': meta['filename'],
-                        'source_url': meta['source_url'],
-                        'passage': sent,
-                        'passage_index': idx,
-                        'full_text': doc
-                    })
-                    break
+        for idx, sent in enumerate(doc_sentences):
+            sent_words = set(sent.lower().split())
+            
+            # Calculate overlap
+            overlap = len(response_words.intersection(sent_words))
+            if overlap >= len(response_words) * threshold and overlap > 2:
+                # Extract a larger context around the sentence
+                start_idx = max(0, idx - 1)
+                end_idx = min(len(doc_sentences), idx + 2)
+                context = ' '.join(doc_sentences[start_idx:end_idx])
+                
+                relevant_passages.append({
+                    'filename': meta['filename'],
+                    'source_url': meta['source_url'],
+                    'passage': context,
+                    'passage_index': idx,
+                    'full_text': doc
+                })
+                break
     
     return relevant_passages
+
+def track_source_usage(response: str, sources: List[Dict]) -> Dict[int, List[str]]:
+    """Track which sources were used for which parts of the response."""
+    source_usage = {}
+    
+    # Extract citation numbers from response
+    citations = re.findall(r'\[(\d+)\]', response)
+    
+    for citation in citations:
+        citation_num = int(citation)
+        if citation_num <= len(sources):
+            # Find the sentence containing this citation
+            pattern = rf'[^.]*\[{citation}\][^.]*\.'
+            matches = re.findall(pattern, response)
+            
+            for match in matches:
+                # Clean the match
+                clean_match = re.sub(r'\[\d+\]', '', match).strip()
+                
+                if citation_num not in source_usage:
+                    source_usage[citation_num] = []
+                
+                # Find relevant passage in the source
+                source = sources[citation_num - 1]
+                doc_sentences = re.split(r'(?<=[.!?])\s+', source[0])
+                
+                # Find best matching sentences
+                best_matches = []
+                match_words = set(clean_match.lower().split())
+                
+                for i, sent in enumerate(doc_sentences):
+                    sent_words = set(sent.lower().split())
+                    overlap = len(match_words.intersection(sent_words))
+                    
+                    if overlap > len(match_words) * 0.3:
+                        best_matches.append((i, sent, overlap))
+                
+                # Sort by overlap and take top matches
+                best_matches.sort(key=lambda x: x[2], reverse=True)
+                for idx, sent, _ in best_matches[:2]:
+                    source_usage[citation_num].append(sent)
+    
+    return source_usage
 
 def generate_response_with_citations(query, history=None, max_new_tokens=1024, temperature=0.7):
     """Generate response with inline citations and passage highlighting info."""
@@ -75,16 +123,17 @@ def generate_response_with_citations(query, history=None, max_new_tokens=1024, t
         retrieved_docs = [doc for doc, meta in candidates]
         retrieved_metadata = [meta for doc, meta in candidates]
         
-        meaningful_retrievals = [doc.strip() for doc in retrieved_docs if len(doc.strip()) > 100]
-        meaningful_metadata = [meta for doc, meta in zip(retrieved_docs, retrieved_metadata) if len(doc.strip()) > 100]
+        meaningful_retrievals = [(doc.strip(), meta) for doc, meta in candidates if len(doc.strip()) > 100]
+        meaningful_docs = [doc for doc, meta in meaningful_retrievals]
+        meaningful_metadata = [meta for doc, meta in meaningful_retrievals]
 
         # Create context with document indices
         context_section = ""
         doc_mapping = {}  # Maps doc index to metadata
         
-        if meaningful_retrievals:
+        if meaningful_docs:
             context_parts = []
-            for idx, (doc, meta) in enumerate(zip(meaningful_retrievals, meaningful_metadata)):
+            for idx, (doc, meta) in enumerate(meaningful_retrievals):
                 context_parts.append(f"[Document {idx+1}]: {doc}")
                 doc_mapping[idx+1] = {
                     'filename': meta['filename'],
@@ -148,6 +197,9 @@ def generate_response_with_citations(query, history=None, max_new_tokens=1024, t
         citation_info = {}
         highlighted_passages = {}
         
+        # Track source usage
+        source_usage = track_source_usage(response_text, meaningful_retrievals)
+        
         for citation in set(citations_found):
             doc_idx = int(citation)
             if doc_idx in doc_mapping:
@@ -157,21 +209,32 @@ def generate_response_with_citations(query, history=None, max_new_tokens=1024, t
                     'source_url': doc_info['source_url']
                 }
                 
-                # Find passages that were likely used for this citation
-                citation_contexts = []
-                for match in re.finditer(rf'([^.]*\[{citation}\][^.]*\.)', response_text):
-                    citation_contexts.append(match.group(1))
-                
-                # Find matching passages in the source document
+                # Find specific passages used for this citation
                 highlighted_passages[citation] = []
-                for context in citation_contexts:
-                    clean_context = re.sub(r'\[\d+\]', '', context).strip()
-                    passages = find_relevant_passages(
-                        clean_context, 
-                        [doc_info['content']], 
-                        [{'filename': doc_info['filename'], 'source_url': doc_info['source_url']}]
-                    )
-                    highlighted_passages[citation].extend(passages)
+                
+                if doc_idx in source_usage:
+                    for passage in source_usage[doc_idx]:
+                        highlighted_passages[citation].append({
+                            'filename': doc_info['filename'],
+                            'source_url': doc_info['source_url'],
+                            'passage': passage,
+                            'passage_index': 0,
+                            'full_text': doc_info['content']
+                        })
+                else:
+                    # Fallback: Find passages that were likely used
+                    citation_contexts = []
+                    for match in re.finditer(rf'([^.]*\[{citation}\][^.]*\.)', response_text):
+                        citation_contexts.append(match.group(1))
+                    
+                    for context in citation_contexts[:2]:  # Limit to 2 contexts per citation
+                        clean_context = re.sub(r'\[\d+\]', '', context).strip()
+                        passages = find_relevant_passages(
+                            clean_context, 
+                            [doc_info['content']], 
+                            [{'filename': doc_info['filename'], 'source_url': doc_info['source_url']}]
+                        )
+                        highlighted_passages[citation].extend(passages[:1])  # One passage per context
         
         # Return enhanced response with metadata
         return {
