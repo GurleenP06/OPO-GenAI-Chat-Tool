@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 import config
@@ -90,6 +90,7 @@ class ToggleFavoriteRequest(BaseModel):
     session_id: str
 
 class ExportRequest(BaseModel):
+    session_id: str
     message_index: int  # Index of the message to export
     format: str  # 'docx' or 'pdf'
 
@@ -483,9 +484,9 @@ def create_pdf_from_message(message: Dict) -> bytes:
 @app.post("/export_chat/")
 async def export_chat(request: ExportRequest):
     """Export a specific message in the requested format."""
-    # Get session from request body
-    session_id = request.dict().get('session_id')
-    if not session_id or session_id not in chat_sessions:
+    session_id = request.session_id
+    
+    if session_id not in chat_sessions:
         raise HTTPException(status_code=404, detail="Chat not found")
     
     messages = chat_sessions[session_id]["messages"]
@@ -500,22 +501,22 @@ async def export_chat(request: ExportRequest):
     
     if request.format == "docx":
         content = create_docx_from_message(message)
-        return FileResponse(
-            io.BytesIO(content),
-            filename=f"ai_response_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx",
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
-    
+        filename = f"ai_response_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     elif request.format == "pdf":
         content = create_pdf_from_message(message)
-        return FileResponse(
-            io.BytesIO(content),
-            filename=f"ai_response_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-            media_type="application/pdf"
-        )
-    
+        filename = f"ai_response_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        media_type = "application/pdf"
     else:
         raise HTTPException(status_code=400, detail="Invalid export format")
+    
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}"
+        }
+    )
 
 # Original endpoints maintained for compatibility
 @app.post("/get_chat_history/")
