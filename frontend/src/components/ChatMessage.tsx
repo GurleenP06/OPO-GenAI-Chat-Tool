@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { Button } from './ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible';
-import { ThumbsUp, ThumbsDown, Copy, ChevronDown, ChevronUp, Eye } from 'lucide-react';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu';
+import { ThumbsUp, ThumbsDown, Copy, ChevronDown, ChevronUp, Eye, Download } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 
 interface Citation {
@@ -18,16 +19,26 @@ interface Message {
   content: string;
   citations?: Citation[];
   timestamp: Date;
+  highlighted_passages?: any;
 }
 
 interface ChatMessageProps {
   message: Message;
+  messageIndex: number;
   onViewSource: (citation: Citation) => void;
   onCopyResponse: (content: string) => void;
   onFeedback: (type: 'up' | 'down') => void;
+  onExport: (format: 'docx' | 'pdf') => void;
 }
 
-export function ChatMessage({ message, onViewSource, onCopyResponse, onFeedback }: ChatMessageProps) {
+export function ChatMessage({ 
+  message, 
+  messageIndex,
+  onViewSource, 
+  onCopyResponse, 
+  onFeedback,
+  onExport 
+}: ChatMessageProps) {
   const [showSources, setShowSources] = useState(false);
 
   const processCitations = (content: string, citations?: Citation[]) => {
@@ -154,7 +165,6 @@ export function ChatMessage({ message, onViewSource, onCopyResponse, onFeedback 
                             </span>
                             {citation.source}
                           </p>
-                          <p className="text-gray-600 italic">"{citation.text}"</p>
                         </div>
                         <Button
                           size="sm"
@@ -201,6 +211,22 @@ export function ChatMessage({ message, onViewSource, onCopyResponse, onFeedback 
             <Copy className="h-4 w-4 mr-1" />
             Copy
           </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" variant="ghost" className="h-9 px-3">
+                <Download className="h-4 w-4 mr-1" />
+                Export
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <DropdownMenuItem onClick={() => onExport('docx')}>
+                Export as DOCX
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onExport('pdf')}>
+                Export as PDF
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
     </div>
