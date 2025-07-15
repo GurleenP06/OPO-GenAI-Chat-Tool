@@ -1,3 +1,5 @@
+// frontend/src/lib/api.ts
+
 const API_BASE = '/api';
 
 export interface Project {
@@ -56,6 +58,14 @@ export interface GenerateResponse {
   highlighted_passages: Record<string, HighlightedPassage[]>;
 }
 
+export interface RatingData {
+  question: string;
+  response: string;
+  feedback_type: 'positive' | 'negative';
+  selected_reason?: string;
+  custom_feedback?: string;
+}
+
 class APIClient {
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const response = await fetch(`${API_BASE}${endpoint}`, {
@@ -93,9 +103,10 @@ class APIClient {
 
   // Chat endpoints
   async newChat(projectId?: string): Promise<{ session_id: string; metadata: ChatMetadata }> {
+    const body = projectId ? JSON.stringify({ project_id: projectId }) : '{}';
     return this.request('/new_chat/', {
       method: 'POST',
-      body: JSON.stringify({ project_id: projectId }),
+      body,
     });
   }
 
@@ -148,7 +159,7 @@ class APIClient {
   // Document viewing
   async viewDocument(filename: string, highlights: HighlightedPassage[]): Promise<{
     content: string;
-    highlights: Array<{ start: number; end: number; passage: string }>;
+    highlights: Array<{ start: number; end: number; passage: string; approximate?: boolean }>;
     filename: string;
   }> {
     return this.request('/view_document/', {
@@ -157,14 +168,14 @@ class APIClient {
     });
   }
 
-  // Export chat
-  async exportChat(sessionId: string, format: 'txt' | 'docx' | 'pdf'): Promise<Blob> {
+  // Export chat - now exports a specific message
+  async exportMessage(sessionId: string, messageIndex: number, format: 'docx' | 'pdf'): Promise<Blob> {
     const response = await fetch(`${API_BASE}/export_chat/`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ session_id: sessionId, format }),
+      body: JSON.stringify({ session_id: sessionId, message_index: messageIndex, format }),
     });
 
     if (!response.ok) {
@@ -174,11 +185,11 @@ class APIClient {
     return response.blob();
   }
 
-  // Rating
-  async saveRating(question: string, response: string, rating: number): Promise<{ message: string }> {
+  // Rating - updated with new structure
+  async saveRating(rating: RatingData): Promise<{ message: string }> {
     return this.request('/save_rating/', {
       method: 'POST',
-      body: JSON.stringify({ question, response, rating }),
+      body: JSON.stringify(rating),
     });
   }
 }
