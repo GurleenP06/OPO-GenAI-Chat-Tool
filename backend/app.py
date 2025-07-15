@@ -11,17 +11,18 @@ import os
 from datetime import datetime
 import pandas as pd
 from pathlib import Path
+import re
 
 # Document generation imports
 from docx import Document as DocxDocument
-from docx.shared import Pt, RGBColor
+from docx.shared import Pt, RGBColor, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-import markdown
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
-from bs4 import BeautifulSoup
-import re
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib.enums import TA_JUSTIFY
+import io
 
 app = FastAPI()
 
@@ -89,8 +90,8 @@ class ToggleFavoriteRequest(BaseModel):
     session_id: str
 
 class ExportRequest(BaseModel):
-    session_id: str
-    format: str  # 'docx', 'pdf', 'txt'
+    message_index: int  # Index of the message to export
+    format: str  # 'docx' or 'pdf'
 
 class QueryRequest(BaseModel):
     session_id: str
@@ -102,7 +103,9 @@ class ChatHistoryRequest(BaseModel):
 class RatingRequest(BaseModel):
     question: str
     response: str
-    rating: int
+    feedback_type: str  # 'positive' or 'negative'
+    selected_reason: Optional[str] = None
+    custom_feedback: Optional[str] = None
 
 class DocumentViewRequest(BaseModel):
     filename: str
@@ -191,6 +194,16 @@ async def list_chats():
         "no_project": []
     }
     
+    # Sort projects by creation date (newest first)
+    sorted_projects = sorted(projects.items(), key=lambda x: x[1]['created_at'], reverse=True)
+    
+    # Initialize projects in sorted order
+    for project_id, project_data in sorted_projects:
+        organized_chats["projects"][project_id] = {
+            "project": project_data,
+            "chats": []
+        }
+    
     # Get chat summaries
     for session_id, metadata in chat_metadata.items():
         chat_info = {
@@ -201,16 +214,19 @@ async def list_chats():
         if metadata["is_favorite"]:
             organized_chats["favorites"].append(chat_info)
         
-        if metadata["project_id"]:
-            project_id = metadata["project_id"]
-            if project_id not in organized_chats["projects"]:
-                organized_chats["projects"][project_id] = {
-                    "project": projects.get(project_id, {"name": "Unknown Project"}),
-                    "chats": []
-                }
-            organized_chats["projects"][project_id]["chats"].append(chat_info)
-        else:
+        if metadata["project_id"] and metadata["project_id"] in organized_chats["projects"]:
+            organized_chats["projects"][metadata["project_id"]]["chats"].append(chat_info)
+        elif not metadata["project_id"]:
             organized_chats["no_project"].append(chat_info)
+    
+    # Sort chats within each category by updated_at (newest first)
+    organized_chats["favorites"].sort(key=lambda x: x["updated_at"], reverse=True)
+    organized_chats["no_project"].sort(key=lambda x: x["updated_at"], reverse=True)
+    
+    for project_id in organized_chats["projects"]:
+        organized_chats["projects"][project_id]["chats"].sort(
+            key=lambda x: x["updated_at"], reverse=True
+        )
     
     return organized_chats
 
@@ -269,18 +285,46 @@ async def view_document(request: DocumentViewRequest):
         with open(text_path, "r", encoding="utf-8") as f:
             content = f.read()
         
-        # Process highlights
+        # Process highlights with improved matching
         highlights = []
         for highlight in request.highlights:
-            passage = highlight.get('passage', '')
-            if passage in content:
-                start = content.find(passage)
-                end = start + len(passage)
+            passage = highlight.get('passage', '').strip()
+            if not passage:
+                continue
+                
+            # Try exact match first
+            start = content.find(passage)
+            if start != -1:
                 highlights.append({
                     'start': start,
-                    'end': end,
+                    'end': start + len(passage),
                     'passage': passage
                 })
+            else:
+                # Try normalized match (remove extra spaces, newlines)
+                normalized_content = ' '.join(content.split())
+                normalized_passage = ' '.join(passage.split())
+                norm_start = normalized_content.find(normalized_passage)
+                
+                if norm_start != -1:
+                    # Map back to original position
+                    char_count = 0
+                    orig_pos = 0
+                    for i, char in enumerate(content):
+                        if not char.isspace() or (i > 0 and not content[i-1].isspace()):
+                            if char_count == norm_start:
+                                orig_pos = i
+                                break
+                            char_count += 1
+                    
+                    # Find approximate end position
+                    end_pos = orig_pos + len(passage)
+                    highlights.append({
+                        'start': orig_pos,
+                        'end': end_pos,
+                        'passage': passage,
+                        'approximate': True
+                    })
         
         return {
             'content': content,
@@ -290,86 +334,185 @@ async def view_document(request: DocumentViewRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Export functionality
-def markdown_to_docx(markdown_text: str, chat_history: List[Dict]) -> str:
-    """Convert markdown text to DOCX format."""
+# Enhanced export functionality
+def clean_citations_from_text(text: str) -> tuple[str, List[str]]:
+    """Remove inline citations and extract unique sources."""
+    # Remove citations like [1], [2], etc.
+    clean_text = re.sub(r'\[\d+\]', '', text)
+    
+    # Extract citation numbers
+    citation_numbers = re.findall(r'\[(\d+)\]', text)
+    
+    return clean_text, list(set(citation_numbers))
+
+def create_docx_from_message(message: Dict) -> bytes:
+    """Create a DOCX file from a single message with proper formatting."""
     doc = DocxDocument()
     
     # Add title
-    title = doc.add_heading('Chat Export', 0)
+    title = doc.add_heading('AI Response', 0)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     
     # Add metadata
-    doc.add_paragraph(f"Exported on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    doc.add_paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     doc.add_paragraph("")
     
-    # Add chat history
-    for msg in chat_history:
-        role = msg['role'].capitalize()
-        content = msg['message']
-        
-        # Add role heading
-        p = doc.add_paragraph()
-        run = p.add_run(f"{role}: ")
-        run.bold = True
-        
-        # Parse markdown and add content
-        # Simple markdown parsing - you might want to use a proper markdown parser
-        lines = content.split('\n')
-        for line in lines:
-            if line.startswith('# '):
-                doc.add_heading(line[2:], level=1)
-            elif line.startswith('## '):
-                doc.add_heading(line[3:], level=2)
-            elif line.startswith('- '):
-                doc.add_paragraph(line[2:], style='List Bullet')
-            elif line.strip():
-                doc.add_paragraph(line)
-        
-        doc.add_paragraph("")  # Add spacing
+    # Get clean content and citation numbers
+    clean_content, citation_nums = clean_citations_from_text(message['message'])
     
-    # Save to temporary file
-    temp_path = DATA_DIR / f"export_{uuid.uuid4()}.docx"
-    doc.save(temp_path)
-    return str(temp_path)
+    # Process the content by paragraphs
+    paragraphs = clean_content.split('\n\n')
+    
+    for para in paragraphs:
+        if not para.strip():
+            continue
+            
+        # Check if it's a header (simple heuristic)
+        if para.strip().endswith(':') and len(para.strip()) < 50:
+            p = doc.add_heading(para.strip(), level=2)
+        elif para.strip().startswith('- ') or para.strip().startswith('• '):
+            # Handle bullet points
+            p = doc.add_paragraph(para.strip(), style='List Bullet')
+        else:
+            # Regular paragraph
+            p = doc.add_paragraph()
+            
+            # Process bold text
+            parts = re.split(r'(\*\*.*?\*\*)', para)
+            for part in parts:
+                if part.startswith('**') and part.endswith('**'):
+                    # Bold text
+                    run = p.add_run(part[2:-2])
+                    run.bold = True
+                else:
+                    # Normal text
+                    p.add_run(part)
+    
+    # Add sources section if there are citations
+    if citation_nums and 'citations' in message:
+        doc.add_page_break()
+        doc.add_heading('Sources', 1)
+        
+        unique_sources = []
+        for num in sorted(citation_nums, key=int):
+            if num in message['citations']:
+                citation = message['citations'][num]
+                source_text = f"[{num}] {citation['filename']}"
+                if citation['source_url']:
+                    source_text += f" - {citation['source_url']}"
+                if source_text not in unique_sources:
+                    unique_sources.append(source_text)
+                    doc.add_paragraph(source_text)
+    
+    # Save to bytes
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+def create_pdf_from_message(message: Dict) -> bytes:
+    """Create a PDF file from a single message with proper formatting."""
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    
+    # Get styles
+    styles = getSampleStyleSheet()
+    title_style = styles['Title']
+    heading_style = styles['Heading2']
+    normal_style = ParagraphStyle(
+        'CustomNormal',
+        parent=styles['Normal'],
+        fontSize=11,
+        leading=14,
+        alignment=TA_JUSTIFY
+    )
+    
+    story = []
+    
+    # Add title
+    story.append(Paragraph("AI Response", title_style))
+    story.append(Spacer(1, 0.3*inch))
+    
+    # Add metadata
+    story.append(Paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", normal_style))
+    story.append(Spacer(1, 0.3*inch))
+    
+    # Get clean content and citation numbers
+    clean_content, citation_nums = clean_citations_from_text(message['message'])
+    
+    # Process content
+    paragraphs = clean_content.split('\n\n')
+    
+    for para in paragraphs:
+        if not para.strip():
+            continue
+            
+        # Clean up the paragraph for PDF
+        para = para.replace('**', '<b>').replace('**', '</b>')
+        para = para.replace('\n', '<br/>')
+        
+        if para.strip().endswith(':') and len(para.strip()) < 50:
+            story.append(Paragraph(para.strip(), heading_style))
+        else:
+            story.append(Paragraph(para, normal_style))
+        story.append(Spacer(1, 0.2*inch))
+    
+    # Add sources if there are citations
+    if citation_nums and 'citations' in message:
+        story.append(PageBreak())
+        story.append(Paragraph("Sources", heading_style))
+        story.append(Spacer(1, 0.2*inch))
+        
+        unique_sources = []
+        for num in sorted(citation_nums, key=int):
+            if num in message['citations']:
+                citation = message['citations'][num]
+                source_text = f"[{num}] {citation['filename']}"
+                if citation['source_url']:
+                    source_text += f" - {citation['source_url']}"
+                if source_text not in unique_sources:
+                    unique_sources.append(source_text)
+                    story.append(Paragraph(source_text, normal_style))
+                    story.append(Spacer(1, 0.1*inch))
+    
+    # Build PDF
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 @app.post("/export_chat/")
 async def export_chat(request: ExportRequest):
-    """Export chat in requested format."""
-    if request.session_id not in chat_sessions:
+    """Export a specific message in the requested format."""
+    # Get session from request body
+    session_id = request.dict().get('session_id')
+    if not session_id or session_id not in chat_sessions:
         raise HTTPException(status_code=404, detail="Chat not found")
     
-    chat_history = chat_sessions[request.session_id]["messages"]
+    messages = chat_sessions[session_id]["messages"]
     
-    if request.format == "txt":
-        # Export as plain text
-        content = ""
-        for msg in chat_history:
-            content += f"{msg['role'].upper()}: {msg['message']}\n\n"
-        
-        temp_path = DATA_DIR / f"export_{uuid.uuid4()}.txt"
-        with open(temp_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        
-        return FileResponse(
-            path=temp_path,
-            filename=f"chat_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-            media_type="text/plain"
-        )
+    if request.message_index >= len(messages):
+        raise HTTPException(status_code=404, detail="Message not found")
     
-    elif request.format == "docx":
-        # Export as DOCX
-        docx_path = markdown_to_docx("", chat_history)
+    message = messages[request.message_index]
+    
+    if message['role'] != 'assistant':
+        raise HTTPException(status_code=400, detail="Can only export AI responses")
+    
+    if request.format == "docx":
+        content = create_docx_from_message(message)
         return FileResponse(
-            path=docx_path,
-            filename=f"chat_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx",
+            io.BytesIO(content),
+            filename=f"ai_response_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx",
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
     
     elif request.format == "pdf":
-        # For PDF, we'll need to implement PDF generation
-        # This is a placeholder - you'll need to add PDF generation logic
-        raise HTTPException(status_code=501, detail="PDF export not yet implemented")
+        content = create_pdf_from_message(message)
+        return FileResponse(
+            io.BytesIO(content),
+            filename=f"ai_response_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+            media_type="application/pdf"
+        )
     
     else:
         raise HTTPException(status_code=400, detail="Invalid export format")
@@ -390,7 +533,9 @@ async def save_rating(request: RatingRequest):
         ratings.append({
             "question": request.question,
             "response": request.response,
-            "rating": request.rating,
+            "feedback_type": request.feedback_type,
+            "selected_reason": request.selected_reason,
+            "custom_feedback": request.custom_feedback,
             "timestamp": datetime.now().isoformat()
         })
         
@@ -414,7 +559,7 @@ def save_chats():
 @app.on_event("startup")
 async def startup_event():
     # Clean up old export files
-    for file in DATA_DIR.glob("export_*."):
+    for file in DATA_DIR.glob("export_*.*"):
         if file.is_file():
             file.unlink()
 
