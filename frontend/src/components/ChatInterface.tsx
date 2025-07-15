@@ -14,13 +14,15 @@ interface ChatInterfaceProps {
   onToggleFavorite: (chatId: string) => void;
   onRenameChat: (chatId: string, newName: string) => void;
   onRefreshChats: () => void;
+  isFavorite?: boolean;
 }
 
 export function ChatInterface({ 
   selectedChat, 
   onToggleFavorite, 
   onRenameChat,
-  onRefreshChats 
+  onRefreshChats,
+  isFavorite = false
 }: ChatInterfaceProps) {
   const [query, setQuery] = useState('');
   const [isRenaming, setIsRenaming] = useState(false);
@@ -28,10 +30,11 @@ export function ChatInterface({
   const [newChatName, setNewChatName] = useState('');
   const [showPdfViewer, setShowPdfViewer] = useState(false);
   const [selectedSource, setSelectedSource] = useState<Citation | null>(null);
-  const [showFeedback, setShowFeedback] = useState<{ messageId: string; type: 'up' | 'down' } | null>(null);
+  const [showFeedback, setShowFeedback] = useState<{ messageId: string; messageIndex: number; type: 'up' | 'down' } | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [thinking, setThinking] = useState(false);
+  const [selectedPassages, setSelectedPassages] = useState<HighlightedPassage[]>([]);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -71,10 +74,11 @@ export function ChatInterface({
         
         return {
           id: `${selectedChat}-${index}`,
-          type: msg.role === 'user' ? 'user' : 'ai',
-          content: msg.message,
+          type: msg.type === 'user' ? 'user' : 'ai',
+          content: msg.content,
           citations: citations.length > 0 ? citations : undefined,
-          timestamp: new Date()
+          timestamp: new Date(),
+          highlighted_passages: msg.highlighted_passages
         };
       });
       
@@ -109,16 +113,6 @@ export function ChatInterface({
     try {
       const response = await api.generate(selectedChat, userMessage.content);
       
-      // Extract sources section from the response
-      let mainContent = response.answer;
-      let sourcesText = '';
-      
-      const sourcesIndex = response.answer.indexOf('\n\nSources:\n');
-      if (sourcesIndex !== -1) {
-        mainContent = response.answer.substring(0, sourcesIndex);
-        sourcesText = response.answer.substring(sourcesIndex);
-      }
-      
       // Convert citations
       const citations: Citation[] = [];
       if (response.citations) {
@@ -135,9 +129,10 @@ export function ChatInterface({
       const aiMessage: Message = {
         id: (Date.now() + 1).toString(),
         type: 'ai',
-        content: response.answer, // Keep full response including sources
+        content: response.answer,
         citations: citations.length > 0 ? citations : undefined,
-        timestamp: new Date()
+        timestamp: new Date(),
+        highlighted_passages: response.highlighted_passages
       };
 
       setMessages(prev => [...prev, aiMessage]);
@@ -169,25 +164,32 @@ export function ChatInterface({
     }
   };
 
-  const handleViewSource = async (citation: Citation) => {
+  const handleViewSource = async (citation: Citation, messageId: string) => {
     setSelectedSource(citation);
+    
+    // Find the message to get highlighted passages
+    const message = messages.find(m => m.id === messageId);
+    if (message && message.highlighted_passages) {
+      const passages = message.highlighted_passages[citation.id] || [];
+      setSelectedPassages(passages);
+    }
+    
     setShowPdfViewer(true);
-    // In a real implementation, you would load the document here
   };
 
   const handleCopyResponse = (content: string) => {
     navigator.clipboard.writeText(content);
   };
 
-  const handleExport = async (format: 'txt' | 'docx' | 'pdf') => {
+  const handleExport = async (messageIndex: number, format: 'docx' | 'pdf') => {
     if (!selectedChat) return;
     
     try {
-      const blob = await api.exportChat(selectedChat, format);
+      const blob = await api.exportMessage(selectedChat, messageIndex, format);
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `chat_export_${new Date().toISOString().split('T')[0]}.${format}`;
+      a.download = `ai_response_${new Date().toISOString().split('T')[0]}.${format}`;
       a.click();
       window.URL.revokeObjectURL(url);
     } catch (error) {
@@ -195,17 +197,19 @@ export function ChatInterface({
     }
   };
 
-  const handleFeedback = async (messageId: string, type: 'up' | 'down', feedback?: string) => {
-    const message = messages.find(m => m.id === messageId);
+  const handleFeedback = async (messageId: string, messageIndex: number, type: 'up' | 'down', feedback?: { selectedReason?: string; customFeedback?: string }) => {
+    const message = messages[messageIndex];
     if (message && message.type === 'ai') {
-      const previousMessage = messages[messages.findIndex(m => m.id === messageId) - 1];
+      const previousMessage = messages[messageIndex - 1];
       if (previousMessage && previousMessage.type === 'user') {
         try {
-          await api.saveRating(
-            previousMessage.content,
-            message.content,
-            type === 'up' ? 5 : 1
-          );
+          await api.saveRating({
+            question: previousMessage.content,
+            response: message.content,
+            feedback_type: type === 'up' ? 'positive' : 'negative',
+            selected_reason: feedback?.selectedReason,
+            custom_feedback: feedback?.customFeedback
+          });
         } catch (error) {
           console.error('Failed to save rating:', error);
         }
@@ -257,28 +261,10 @@ export function ChatInterface({
               size="sm"
               variant="ghost"
               onClick={() => selectedChat && onToggleFavorite(selectedChat)}
+              className={isFavorite ? 'text-yellow-500' : ''}
             >
-              <Star className="h-4 w-4" />
+              <Star className={`h-4 w-4 ${isFavorite ? 'fill-current' : ''}`} />
             </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button size="sm" variant="outline">
-                  <Download className="h-4 w-4" />
-                  Export
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent>
-                <DropdownMenuItem onClick={() => handleExport('txt')}>
-                  Export as TXT
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleExport('docx')}>
-                  Export as DOCX
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => handleExport('pdf')}>
-                  Export as PDF
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
           </div>
         </div>
 
@@ -290,13 +276,15 @@ export function ChatInterface({
                 <Loader2 className="h-6 w-6 animate-spin" />
               </div>
             )}
-            {!loading && messages.map((message) => (
+            {!loading && messages.map((message, index) => (
               <ChatMessage
                 key={message.id}
                 message={message}
-                onViewSource={handleViewSource}
+                messageIndex={index}
+                onViewSource={(citation) => handleViewSource(citation, message.id)}
                 onCopyResponse={handleCopyResponse}
-                onFeedback={(type) => setShowFeedback({ messageId: message.id, type })}
+                onFeedback={(type) => setShowFeedback({ messageId: message.id, messageIndex: index, type })}
+                onExport={(format) => handleExport(index, format)}
               />
             ))}
             {thinking && (
@@ -339,30 +327,53 @@ export function ChatInterface({
               <h3 className="font-semibold">{selectedSource.source}</h3>
               <p className="text-sm text-muted-foreground">Source Document</p>
             </div>
-            <Button size="sm" variant="ghost" onClick={() => setShowPdfViewer(false)}>
+            <Button size="sm" variant="ghost" onClick={() => {
+              setShowPdfViewer(false);
+              setSelectedPassages([]);
+            }}>
               ×
             </Button>
           </div>
           <div className="flex-1 overflow-y-auto p-6">
             <div className="prose prose-sm max-w-none">
-              <div className="bg-yellow-100 border-l-4 border-yellow-500 p-4 mb-4">
-                <p className="font-semibold mb-2">Highlighted Passage:</p>
-                <p className="italic">{selectedSource.text}</p>
-              </div>
-              <div className="mt-6">
-                <p className="text-sm text-muted-foreground mb-4">
-                  Full document preview would be displayed here with the relevant passage highlighted.
-                </p>
-                <a 
-                  href={selectedSource.url} 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 text-primary hover:underline"
-                >
-                  <ExternalLink className="h-4 w-4" />
-                  Open original document
-                </a>
-              </div>
+              {selectedPassages.length > 0 ? (
+                <>
+                  <div className="mb-6">
+                    <h4 className="font-semibold mb-3">Highlighted Passages:</h4>
+                    {selectedPassages.map((passage, idx) => (
+                      <div key={idx} className="bg-yellow-100 border-l-4 border-yellow-500 p-4 mb-4">
+                        <p className="italic">{passage.passage}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-6">
+                    <a 
+                      href={selectedSource.url} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-2 text-primary hover:underline"
+                    >
+                      <ExternalLink className="h-4 w-4" />
+                      Open full document
+                    </a>
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    Full document content with highlighted passages would be displayed here.
+                  </p>
+                  <a 
+                    href={selectedSource.url} 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-2 text-primary hover:underline"
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                    Open original document
+                  </a>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -374,7 +385,7 @@ export function ChatInterface({
           type={showFeedback.type}
           onClose={() => setShowFeedback(null)}
           onSubmit={(feedback) => {
-            handleFeedback(showFeedback.messageId, showFeedback.type, feedback.customFeedback);
+            handleFeedback(showFeedback.messageId, showFeedback.messageIndex, showFeedback.type, feedback);
           }}
         />
       )}
