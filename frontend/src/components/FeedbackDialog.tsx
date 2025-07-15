@@ -7,7 +7,7 @@ import { Badge } from './ui/badge';
 interface FeedbackDialogProps {
   type: 'up' | 'down';
   onClose: () => void;
-  onSubmit: (feedback: { type: 'up' | 'down'; reason?: string; customFeedback?: string }) => void;
+  onSubmit: (feedback: { type: 'up' | 'down'; selectedReason?: string; customFeedback?: string }) => void;
 }
 
 const positiveOptions = [
@@ -33,7 +33,7 @@ const negativeOptions = [
 export function FeedbackDialog({ type, onClose, onSubmit }: FeedbackDialogProps) {
   const [selectedReason, setSelectedReason] = useState<string | null>(null);
   const [customFeedback, setCustomFeedback] = useState('');
-  const [showCustom, setShowCustom] = useState(false);
+  const [isOtherSelected, setIsOtherSelected] = useState(false);
 
   const options = type === 'up' ? positiveOptions : negativeOptions;
   const title = type === 'up' ? 'What did you like about this response?' : 'What could be improved?';
@@ -44,9 +44,19 @@ export function FeedbackDialog({ type, onClose, onSubmit }: FeedbackDialogProps)
   const handleSubmit = () => {
     onSubmit({
       type,
-      reason: selectedReason || undefined,
+      selectedReason: isOtherSelected ? 'Other' : selectedReason || undefined,
       customFeedback: customFeedback.trim() || undefined
     });
+  };
+
+  const handleOptionClick = (option: string) => {
+    setSelectedReason(option);
+    setIsOtherSelected(false);
+  };
+
+  const handleOtherClick = () => {
+    setIsOtherSelected(true);
+    setSelectedReason(null);
   };
 
   return (
@@ -62,26 +72,29 @@ export function FeedbackDialog({ type, onClose, onSubmit }: FeedbackDialogProps)
             {options.map((option) => (
               <Badge
                 key={option}
-                variant={selectedReason === option ? 'default' : 'outline'}
+                variant={selectedReason === option && !isOtherSelected ? 'default' : 'outline'}
                 className="cursor-pointer p-2 text-center justify-center hover:bg-accent"
-                onClick={() => setSelectedReason(option)}
+                onClick={() => handleOptionClick(option)}
               >
                 {option}
               </Badge>
             ))}
             <Badge
-              variant={showCustom ? 'default' : 'outline'}
+              variant={isOtherSelected ? 'default' : 'outline'}
               className="cursor-pointer p-2 text-center justify-center hover:bg-accent col-span-2"
-              onClick={() => setShowCustom(!showCustom)}
+              onClick={handleOtherClick}
             >
               Other (specify)
             </Badge>
           </div>
 
-          {showCustom && (
+          {(isOtherSelected || selectedReason) && (
             <div>
+              <label className="text-sm font-medium mb-2 block">
+                {isOtherSelected ? 'Please provide your feedback:' : 'Additional comments (optional):'}
+              </label>
               <Textarea
-                placeholder="Please provide your feedback..."
+                placeholder={isOtherSelected ? "Please describe your feedback..." : "Any additional thoughts..."}
                 value={customFeedback}
                 onChange={(e) => setCustomFeedback(e.target.value)}
                 className="min-h-[80px]"
@@ -95,7 +108,7 @@ export function FeedbackDialog({ type, onClose, onSubmit }: FeedbackDialogProps)
             </Button>
             <Button 
               onClick={handleSubmit}
-              disabled={!selectedReason && !customFeedback.trim()}
+              disabled={!selectedReason && !isOtherSelected}
             >
               Submit Feedback
             </Button>
