@@ -1,3 +1,4 @@
+// frontend/src/lib/api.ts
 const API_BASE = '/api';
 
 export interface Project {
@@ -20,13 +21,20 @@ export interface Chat extends ChatMetadata {
   summary: string;
 }
 
+export interface APIMessage {
+  role: 'user' | 'assistant';
+  message: string;
+  citations?: Record<string, Citation>;
+  highlighted_passages?: Record<string, HighlightedPassage[]>;
+}
+
 export interface Message {
   id: string;
   type: 'user' | 'ai';
   content: string;
   citations?: Citation[];
   timestamp: Date;
-  highlighted_passages?: Record<string, any[]>;
+  highlighted_passages?: Record<string, HighlightedPassage[]>;
 }
 
 export interface Citation {
@@ -56,6 +64,14 @@ export interface GenerateResponse {
   answer: string;
   citations: Record<string, Citation>;
   highlighted_passages: Record<string, HighlightedPassage[]>;
+}
+
+export interface RatingRequest {
+  question: string;
+  response: string;
+  feedback_type: 'positive' | 'negative';
+  selected_reason?: string;
+  custom_feedback?: string;
 }
 
 class APIClient {
@@ -132,7 +148,7 @@ class APIClient {
     });
   }
 
-  async getChatHistory(sessionId: string): Promise<{ session_id: string; history: Message[] }> {
+  async getChatHistory(sessionId: string): Promise<{ session_id: string; history: APIMessage[] }> {
     return this.request('/get_chat_history/', {
       method: 'POST',
       body: JSON.stringify({ session_id: sessionId }),
@@ -150,7 +166,7 @@ class APIClient {
   // Document viewing
   async viewDocument(filename: string, highlights: HighlightedPassage[]): Promise<{
     content: string;
-    highlights: Array<{ start: number; end: number; passage: string }>;
+    highlights: Array<{ start: number; end: number; passage: string; approximate?: boolean }>;
     filename: string;
   }> {
     return this.request('/view_document/', {
@@ -159,7 +175,7 @@ class APIClient {
     });
   }
 
-// Export chat - now exports a specific message
+  // Export chat message
   async exportMessage(sessionId: string, messageIndex: number, format: 'docx' | 'pdf'): Promise<Blob> {
     const response = await fetch(`${API_BASE}/export_chat/`, {
       method: 'POST',
@@ -176,18 +192,11 @@ class APIClient {
     return response.blob();
   }
 
-  // Compatibility wrapper for old export method
-  async exportChat(sessionId: string, format: string): Promise<Blob> {
-    // This method is kept for compatibility but should not be used
-    // Use exportMessage instead
-    throw new Error('Use exportMessage instead of exportChat');
-  }
-
   // Rating
-  async saveRating(question: string, response: string, rating: number): Promise<{ message: string }> {
+  async saveRating(rating: RatingRequest): Promise<{ message: string }> {
     return this.request('/save_rating/', {
       method: 'POST',
-      body: JSON.stringify({ question, response, rating }),
+      body: JSON.stringify(rating),
     });
   }
 }
