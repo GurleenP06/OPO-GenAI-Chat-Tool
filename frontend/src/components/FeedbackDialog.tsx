@@ -1,3 +1,4 @@
+// frontend/src/components/FeedbackDialog.tsx
 import { useState } from 'react';
 import { Button } from './ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from './ui/dialog';
@@ -7,7 +8,7 @@ import { Badge } from './ui/badge';
 interface FeedbackDialogProps {
   type: 'up' | 'down';
   onClose: () => void;
-  onSubmit: (feedback: { type: 'up' | 'down'; selectedReason?: string; customFeedback?: string }) => void;
+  onSubmit: (feedback: { selectedReason?: string; customFeedback?: string }) => void;
 }
 
 const positiveOptions = [
@@ -43,7 +44,6 @@ export function FeedbackDialog({ type, onClose, onSubmit }: FeedbackDialogProps)
 
   const handleSubmit = () => {
     onSubmit({
-      type,
       selectedReason: isOtherSelected ? 'Other' : selectedReason || undefined,
       customFeedback: customFeedback.trim() || undefined
     });
