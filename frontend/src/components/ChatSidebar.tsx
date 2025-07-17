@@ -1,3 +1,4 @@
+// frontend/src/components/ChatSidebar.tsx
 import { useState } from 'react';
 import { Button } from './ui/button';
 import { ScrollArea } from './ui/scroll-area';
@@ -60,6 +61,11 @@ export function ChatSidebar({
     return new Date(dateString).toLocaleDateString();
   };
 
+  // Sort projects by creation date (newest first)
+  const sortedProjects = Object.entries(organizedChats.projects).sort(([, a], [, b]) => {
+    return new Date(b.project.created_at).getTime() - new Date(a.project.created_at).getTime();
+  });
+
   return (
     <div className="w-80 border-r border-border bg-sidebar flex flex-col">
       <div className="p-4 border-b border-sidebar-border">
@@ -105,13 +111,37 @@ export function ChatSidebar({
                     >
                       <MessageSquare className="h-3 w-3" />
                       <span className="truncate flex-1">{chat.name}</span>
-                      <Star 
-                        className="h-3 w-3 fill-yellow-400 text-yellow-400 opacity-0 group-hover:opacity-100 cursor-pointer" 
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onToggleFavorite(chat.session_id);
-                        }}
-                      />
+                      <DropdownMenu>
+                        <DropdownMenuTrigger 
+                          className="opacity-0 group-hover:opacity-100 p-1"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <MoreVertical className="h-3 w-3" />
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent>
+                          <DropdownMenuItem 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onToggleFavorite(chat.session_id);
+                            }}
+                          >
+                            <Star className="h-4 w-4 mr-2 fill-yellow-400" />
+                            Remove from Favorites
+                          </DropdownMenuItem>
+                          <DropdownMenuItem 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (confirm('Are you sure you want to delete this chat?')) {
+                                onDeleteChat(chat.session_id);
+                              }
+                            }}
+                            className="text-destructive"
+                          >
+                            <Trash2 className="h-4 w-4 mr-2" />
+                            Delete Chat
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
                   ))}
                 </CollapsibleContent>
@@ -119,8 +149,8 @@ export function ChatSidebar({
             </div>
           )}
 
-          {/* Projects Section */}
-          {Object.entries(organizedChats.projects).map(([projectId, projectData]) => (
+          {/* Projects Section - sorted by newest first */}
+          {sortedProjects.map(([projectId, projectData]) => (
             <div key={projectId}>
               <Collapsible
                 open={expandedProjects.has(projectId)}
@@ -171,6 +201,9 @@ export function ChatSidebar({
                         <div className="truncate">{chat.name}</div>
                         <div className="text-xs opacity-60">{formatDate(chat.updated_at)}</div>
                       </div>
+                      {chat.is_favorite && (
+                        <Star className="h-3 w-3 fill-yellow-400 text-yellow-400" />
+                      )}
                       <DropdownMenu>
                         <DropdownMenuTrigger 
                           className="opacity-0 group-hover:opacity-100 p-1"
@@ -180,24 +213,32 @@ export function ChatSidebar({
                         </DropdownMenuTrigger>
                         <DropdownMenuContent>
                           <DropdownMenuItem 
-                            onClick={() => onToggleFavorite(chat.session_id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onToggleFavorite(chat.session_id);
+                            }}
                           >
                             <Star className={`h-4 w-4 mr-2 ${chat.is_favorite ? 'fill-yellow-400' : ''}`} />
                             {chat.is_favorite ? 'Remove from Favorites' : 'Add to Favorites'}
                           </DropdownMenuItem>
                           <DropdownMenuItem onClick={(e) => {
                             e.stopPropagation();
-                            const availableProjects = Object.entries(organizedChats.projects);
+                            const availableProjects = Object.entries(organizedChats.projects)
+                              .filter(([id]) => id !== projectId);
                             if (availableProjects.length === 0) {
-                              alert('No projects available. Create a project first.');
-                              return;
-                            }
-                            const projectNames = availableProjects.map(([id, data]) => data.project.name);
-                            const selected = prompt(`Move to which project?\n\nAvailable projects:\n${projectNames.join('\n')}\n\nEnter project name:`);
-                            if (selected) {
-                              const project = availableProjects.find(([id, data]) => data.project.name === selected);
-                              if (project) {
-                                onMoveToProject(chat.session_id, project[0]);
+                              onMoveToProject(chat.session_id, undefined);
+                            } else {
+                              const projectNames = availableProjects.map(([id, data]) => data.project.name);
+                              const selected = prompt(`Move to which project?\n\nAvailable projects:\n${projectNames.join('\n')}\n\nEnter project name (or leave empty for "All Chats"):`);
+                              if (selected !== null) {
+                                if (selected === '') {
+                                  onMoveToProject(chat.session_id, undefined);
+                                } else {
+                                  const project = availableProjects.find(([id, data]) => data.project.name === selected);
+                                  if (project) {
+                                    onMoveToProject(chat.session_id, project[0]);
+                                  }
+                                }
                               }
                             }
                           }}>
@@ -257,6 +298,9 @@ export function ChatSidebar({
                         <div className="truncate">{chat.name}</div>
                         <div className="text-xs opacity-60">{formatDate(chat.updated_at)}</div>
                       </div>
+                      {chat.is_favorite && (
+                        <Star className="h-3 w-3 fill-yellow-400 text-yellow-400" />
+                      )}
                       <DropdownMenu>
                         <DropdownMenuTrigger 
                           className="opacity-0 group-hover:opacity-100 p-1"
@@ -266,14 +310,44 @@ export function ChatSidebar({
                         </DropdownMenuTrigger>
                         <DropdownMenuContent>
                           <DropdownMenuItem 
-                            onClick={() => onToggleFavorite(chat.session_id)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onToggleFavorite(chat.session_id);
+                            }}
                           >
                             <Star className={`h-4 w-4 mr-2 ${chat.is_favorite ? 'fill-yellow-400' : ''}`} />
                             {chat.is_favorite ? 'Remove from Favorites' : 'Add to Favorites'}
                           </DropdownMenuItem>
-                          <DropdownMenuItem>
-                            <Folder className="h-4 w-4 mr-2" />
+                          <DropdownMenuItem onClick={(e) => {
+                            e.stopPropagation();
+                            const availableProjects = Object.entries(organizedChats.projects);
+                            if (availableProjects.length === 0) {
+                              alert('No projects available. Create a project first.');
+                              return;
+                            }
+                            const projectNames = availableProjects.map(([id, data]) => data.project.name);
+                            const selected = prompt(`Move to which project?\n\nAvailable projects:\n${projectNames.join('\n')}\n\nEnter project name:`);
+                            if (selected) {
+                              const project = availableProjects.find(([id, data]) => data.project.name === selected);
+                              if (project) {
+                                onMoveToProject(chat.session_id, project[0]);
+                              }
+                            }
+                          }}>
+                            <FolderOpen className="h-4 w-4 mr-2" />
                             Move to Project
+                          </DropdownMenuItem>
+                          <DropdownMenuItem 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (confirm('Are you sure you want to delete this chat?')) {
+                                onDeleteChat(chat.session_id);
+                              }
+                            }}
+                            className="text-destructive"
+                          >
+                            <Trash2 className="h-4 w-4 mr-2" />
+                            Delete Chat
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
