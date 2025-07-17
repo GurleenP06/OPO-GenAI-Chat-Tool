@@ -1,3 +1,4 @@
+// frontend/src/components/ChatMessage.tsx
 import { useState } from 'react';
 import { Button } from './ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible';
@@ -46,8 +47,8 @@ export function ChatMessage({
     
     // Replace [n] with styled citation boxes
     let processedContent = content;
-    citations.forEach((_citation, index) => {
-      const citationNum = index + 1;
+    citations.forEach((citation) => {
+      const citationNum = citation.id;
       const citationPattern = new RegExp(`\\[${citationNum}\\]`, 'g');
       processedContent = processedContent.replace(
         citationPattern,
@@ -111,9 +112,12 @@ export function ChatMessage({
         onClick={(e) => {
           const target = e.target as HTMLElement;
           if (target.classList.contains('citation-button')) {
-            const citationNum = parseInt(target.getAttribute('data-citation') || '0');
-            if (message.citations && message.citations[citationNum - 1]) {
-              onViewSource(message.citations[citationNum - 1]);
+            const citationNum = target.getAttribute('data-citation');
+            if (message.citations && citationNum) {
+              const citation = message.citations.find(c => c.id === citationNum);
+              if (citation) {
+                onViewSource(citation);
+              }
             }
           }
         }}
@@ -155,13 +159,13 @@ export function ChatMessage({
               </CollapsibleTrigger>
               <CollapsibleContent className="mt-3">
                 <div className="space-y-3 border-t pt-3">
-                  {message.citations.map((citation, index) => (
+                  {message.citations.map((citation) => (
                     <div key={citation.id} className="bg-white border border-gray-200 rounded-lg p-4 text-sm">
                       <div className="flex items-start justify-between gap-2">
                         <div className="flex-1">
                           <p className="mb-1 font-semibold flex items-center gap-2">
                             <span className="inline-flex items-center justify-center px-2 py-0.5 text-xs font-semibold text-white bg-blue-600 rounded min-w-[24px] h-[22px]">
-                              {index + 1}
+                              {citation.id}
                             </span>
                             {citation.source}
                           </p>
@@ -220,7 +224,7 @@ export function ChatMessage({
             </DropdownMenuTrigger>
             <DropdownMenuContent>
               <DropdownMenuItem onClick={() => onExport('docx')}>
-                Export as DOCX
+                Export as Word (.docx)
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => onExport('pdf')}>
                 Export as PDF
